@@ -1,0 +1,18 @@
+<script setup lang="ts">
+const { t } = useLanguage()
+const auth = useAuth()
+const db=useSupabase(),month=ref(nowMonth()),data=ref<Record<string,number>|null>(null),error=ref(''),loading=ref(false)
+const labels=computed<Record<string,string>>(()=>({tuition_collected:t('dashboard.collected'),chapter_collected:t('financialUi.officeSummary.chapterCollected'),chapter_outstanding:t('financialUi.officeSummary.chapterOutstanding'),chapter_printing:t('financialUi.officeSummary.chapterPrinting'),chapter_net:t('financialUi.officeSummary.chapterNet'),gross_collected:t('financialUi.officeSummary.gross'),teacher_entitlement:t('financialUi.officeSummary.monthlyTeacherEntitlement'),office_entitlement:t('financialUi.officeSummary.monthlyOfficeEntitlement'),institution_funded:t('agreements.funded'),teacher_paid:t('financialUi.officeSummary.teacherPaid'),expenses:t('financialUi.expenses.title'),net_after_entitlement:t('financialUi.officeSummary.netAfterEntitlement'),cash_after_payments:t('financialUi.officeSummary.cashAfterPayments')}))
+async function load(){loading.value=true;data.value=null;error.value='';try{if(!db)throw Error(t('financialUi.officeSummary.unavailable'));if(!auth.canFinance.value)throw Error(t('financialUi.officeSummary.financeRoleRequired'));if(!isValidMonth(month.value))throw Error(t('financialUi.finance.monthInvalid'));const selectedMonth=monthStart(month.value);const q=await db.rpc('office_month_summary',{p_month:selectedMonth});if(q.error){errText(q.error);throw q.error}const result=Array.isArray(q.data)?q.data[0]:q.data;if(!result||typeof result!=='object')throw Error(t('financialUi.officeSummary.invalidResponse'));const required=Object.keys(labels.value);if(required.some(key=>result[key]===null||result[key]===undefined||!Number.isFinite(Number(result[key]))))throw Error(t('financialUi.officeSummary.invalidResponse'));data.value=Object.fromEntries(required.map(key=>[key,Number(result[key])]))}catch(cause){const e=cause as {code?:string;message?:string;details?:string;hint?:string};if(import.meta.dev)console.error('[OfficeSummary RPC failure]',{code:e?.code,message:e?.message,details:e?.details,hint:e?.hint});error.value=officeError(e)}finally{loading.value=false}}
+function officeError(cause: unknown) {
+  const e=cause as {code?:string;status?:number;message?:string;details?:string;hint?:string}
+  if(e?.code==='42501'||e?.status===403||e?.code==='P0001'&&/financial access required|permission denied/i.test(e.message||''))return t('financialUi.officeSummary.financeRoleRequired')
+  if(e?.code==='PGRST202')return t('financialUi.officeSummary.rpcCacheMismatch')
+  if(e?.code==='PGRST301'||e?.status===401)return t('agreements.sessionExpired')
+  if(e instanceof TypeError||/fetch|network|failed to fetch/i.test(e?.message||''))return t('agreements.network')
+  if(['42P01','42703','42883','PGRST204','PGRST205','PGRST206'].includes(e?.code||''))return t('financialUi.officeSummary.databaseSchemaError')
+  return errText(cause)
+}
+onMounted(load)
+</script>
+<template><section class="card" style="margin-top:20px"><div class="card-header"><h3>{{ t('financialUi.officeSummary.title') }}</h3><label>{{ t('financialUi.month') }}<input v-model="month" type="month" @change="load"/></label><button class="btn" :disabled="loading" @click="load">{{ t('financialUi.refresh') }}</button></div><Notice :message="error" kind="error"/><p v-if="loading">{{ t('financialUi.loading') }}</p><div v-if="data" class="office-stats"><div v-for="(label,key) in labels" :key="key" class="summary-row"><span>{{label}}</span><strong>{{money(data[key])}}</strong></div></div><p v-if="data" class="hint">{{ t('financialUi.officeSummary.hint') }}</p></section></template>

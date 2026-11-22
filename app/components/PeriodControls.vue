@@ -1,0 +1,6 @@
+<script setup lang="ts">
+const { t } = useLanguage()
+const props=defineProps<{periodId:string;status:string}>(),emit=defineEmits<{changed:[]}>(),db=useSupabase(),auth=useAuth(),error=ref(''),busy=ref(false)
+async function change(state:string){if(!db||busy.value)return;const reason=window.prompt(t('financialUi.period.reasonPrompt'));if(!reason)return;busy.value=true;error.value='';try{const q=await db.rpc('set_period_state',{p_period:props.periodId,p_state:state,p_reason:reason});if(q.error)throw q.error;emit('changed')}catch(e){error.value=errText(e)}finally{busy.value=false}}
+</script>
+<template><div v-if="auth.profile.value?.role==='admin'&&periodId"><Notice :message="error" kind="error"/><div class="table-toolbar"><span>{{ t('financialUi.period.status') }} {{status==='open'?t('financialUi.period.open'):status==='under_review'?t('financialUi.period.underReview'):t('financialUi.period.closed')}}</span><button v-if="status==='open'" class="btn" :disabled="busy" @click="change('under_review')">{{ t('financialUi.period.startReview') }}</button><button v-if="status==='open'||status==='under_review'" class="btn" :disabled="busy" @click="change('closed')">{{ t('financialUi.period.closeMonth') }}</button><button v-if="status!=='open'" class="btn danger" :disabled="busy" @click="change('open')">{{ t('financialUi.period.reopen') }}</button></div></div></template>

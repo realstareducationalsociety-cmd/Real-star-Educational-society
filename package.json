@@ -1,0 +1,37 @@
+{
+  "name": "real-star-management",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "test": "node tests/check_ts.cjs && node tests/database_contracts.mjs && node tests/error_messages.mjs && node tests/historical_workbook.mjs && node tests/materials_database.mjs",
+    "test:print": "node tests/print_browser.mjs",
+    "test:phase1": "node tests/manual_agreements_database.mjs",
+    "test:phase2": "node tests/november_import_database.mjs && node tests/november_profile_sql_database.mjs",
+    "test:registration": "node tests/dashboard_browser.mjs"
+  },
+  "dependencies": {
+    "@nuxtjs/i18n": "^10.6.0",
+    "@supabase/supabase-js": "^2.0.0",
+    "fflate": "^0.8.3",
+    "lucide-vue-next": "^0.468.0",
+    "nuxt": "^4.6.4",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@types/node": "^26.6.6",
+    "playwright": "^1.65.1",
+    "typescript": "^5.6.0",
+    "vue-tsc": "^2.2.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

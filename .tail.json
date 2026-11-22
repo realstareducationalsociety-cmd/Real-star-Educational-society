@@ -1,0 +1,4 @@
+{
+  "len": 56185,
+  "tail": "rt_approve(uuid,jsonb),\r\n  public.november_import_approve_ready(text),\r\n  public.november_import_post(integer,uuid),\r\n  public.november_import_summary(text)\r\n  from public, anon;\r\n\r\ngrant execute on function public.build_november_import_candidates(text),\r\n  public.november_import_approve(uuid,jsonb),\r\n  public.november_import_approve_ready(text),\r\n  public.november_import_post(integer,uuid),\r\n  public.november_import_summary(text)\r\n  to authenticated;\r\n\r\nnotify pgrst, 'reload schema';\r\ncommit;\r\n"
+}
