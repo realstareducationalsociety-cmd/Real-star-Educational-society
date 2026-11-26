@@ -54,7 +54,7 @@ try {
   await assert.rejects(() => q('select public.import_november_batch($1,$2)', ['[]', id()]), /permission denied for function import_november_batch/)
 
   const candidate = (await q(`select * from november_import_candidates
-    where source_sheet='Registrations' and class_id is not null and source_tuition>0 and source_discount<=source_tuition
+    where source_sheet='Registrations' and class_id is not null and source_tuition>0 and source_discount<source_tuition
       and (source_payment=0 or (source_payment_date is not null and source_payment_reference is not null))
       and blocking_reasons='[]'::jsonb
       and lower(regexp_replace(coalesce(teacher_name,''),'[^a-zA-Z]','','g')) !~ '^tah(e|i)rasakhizada$'
@@ -110,6 +110,12 @@ try {
     join enrollments e on e.id=m.enrollment_id
     where e.student_id=$1 and p.voided_at is null`, [profile.student_id])), 0,
     'An unverified historical receipt must not become a payment')
+  const educationRow = (await scalar("select public.monthly_registration_list(date '2026-11-01',$1)", [profile.student_id]))[0]
+  assert.equal(educationRow.registration_status, 'registered', 'An approved monthly registration is complete without requiring payment')
+  assert.equal(educationRow.payment_status, 'unpaid', 'Payment state remains separately visible')
+  const monthSummary = await scalar("select public.monthly_registration_summary(date '2026-11-01')")
+  assert.equal(Number(monthSummary.registrations), 1, 'Education registration totals include an unpaid active registration')
+  assert.equal(Number(monthSummary.unpaid_registrations), 1, 'Unpaid status is reported independently')
 
   const linkedCandidate = (await q(`select c.* from november_import_candidates c
     join class_rooms r on r.id=c.class_id

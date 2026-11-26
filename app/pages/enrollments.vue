@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SearchableSelect } from '#components'
 import { Users, RefreshCcw, CalendarPlus } from 'lucide-vue-next'
 import type { Student, ClassItem } from '~/types/models'
 
@@ -122,9 +123,29 @@ async function cancelRegistration(row: RegistrationRow) {
 }
 
 async function changeEnrollment(row: any) {
-  if (!supabase) return
+  if (!supabase || !auth.canEducation.value) return
   error.value = ''
-  const result = await supabase.from('enrollments').update({ active: !row.active }).eq('id', row.id)
+  let result
+  if (row.active) {
+    if (!window.confirm('این شاگرد از صنف خارج شود؟ سابقه آموزشی و مالی حفظ می‌شود.')) return
+    const reason = window.prompt('دلیل خارج‌کردن شاگرد از صنف را بنویسید (حداقل ۴ حرف):')
+    if (!reason || reason.trim().length < 4) { error.value = 'دلیل باید حداقل ۴ حرف باشد.'; return }
+    result = await supabase.rpc('withdraw_student_from_class', {
+      p_student: row.student_id,
+      p_enrollment: row.id,
+      p_reason: reason.trim()
+    })
+  } else {
+    if (!window.confirm('ارتباط این شاگرد با صنف دوباره فعال شود؟')) return
+    result = await supabase.rpc('change_student_class_membership', {
+      p_student: row.student_id,
+      p_prior_enrollment: null,
+      p_class: row.class_id,
+      p_effective_on: todayKarachi(),
+      p_operation: 'add',
+      p_reason: null
+    })
+  }
   if (result.error) error.value = errText(result.error)
   else {
     success.value = 'وضعیت ارتباط دائمی صنف تغییر کرد؛ سوابق ثبت‌نام ماهانه دست‌نخورده باقی ماند.'
@@ -161,10 +182,7 @@ watch(month, () => {
     <section class="card" style="margin-bottom:20px">
       <div class="card-header"><div><h3>اشتراک‌های ماه انتخاب‌شده</h3><p>هر ردیف نشان‌دهندهٔ یک اشتراک شاگرد در یک صنف برای همین ماه است.</p></div><Users class="muted" :size="21" /></div>
       <div class="table-toolbar">
-        <select v-model="selectedClass" style="max-width:280px">
-          <option value="">تمام صنف‌ها</option>
-          <option v-for="c in classes" :key="c.id" :value="c.id">{{ c.title }}</option>
-        </select>
+        <SearchableSelect v-model="selectedClass" :options="classes" label-key="title" :placeholder="t('financialUi.monthlyReport.allClasses')" :allow-empty="true" :empty-label="t('financialUi.monthlyReport.allClasses')" />
         <span v-if="loaded" class="badge info">{{ monthlyRows.filter(row => row.registration_active && (!selectedClass || row.enrollment.class_id === selectedClass)).length }} اشتراک</span>
       </div>
       <div class="table-wrap">
@@ -189,7 +207,7 @@ watch(month, () => {
     <section class="card">
       <div class="card-header"><div><h3>پروفایل‌ها و ارتباط دایمی با صنف‌ها</h3><p>غیرفعال‌کردن ارتباط صنف، سابقه ماهانه را حذف نمی‌کند.</p></div><Users class="muted" :size="21" /></div>
       <div class="table-toolbar">
-        <select v-model="selectedClass" style="max-width:280px"><option value="">تمام صنف‌ها</option><option v-for="c in classes" :key="c.id" :value="c.id">{{ c.title }}</option></select>
+        <SearchableSelect v-model="selectedClass" :options="classes" label-key="title" :placeholder="t('financialUi.monthlyReport.allClasses')" :allow-empty="true" :empty-label="t('financialUi.monthlyReport.allClasses')" />
         <label style="display:flex;align-items:center;gap:9px"><input v-model="showInactive" type="checkbox" style="width:auto" />نمایش ارتباط‌های غیرفعال</label>
         <span v-if="loaded" class="badge info">{{ filtered.length }} ارتباط</span>
       </div>

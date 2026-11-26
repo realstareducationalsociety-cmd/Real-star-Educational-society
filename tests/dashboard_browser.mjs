@@ -12,7 +12,13 @@ const js = ts.transpileModule(compileScript(descriptor, {
   inlineTemplate: true
 }).content, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
-}).outputText.replaceAll('from "vue"', 'from "/vue.js"').replaceAll("from 'vue'", "from '/vue.js'")
+}).outputText.replaceAll('from "vue"', 'from "/vue.js"').replaceAll("from 'vue'", "from '/vue.js'").replaceAll('from "#components"', 'from "/components.js"').replaceAll("from '#components'", "from '/components.js'")
+const searchableSource = readFileSync('app/components/SearchableSelect.vue', 'utf8')
+const searchableDescriptor = parse(searchableSource).descriptor
+const searchableJs = ts.transpileModule(compileScript(searchableDescriptor, { id: 'searchable-select', inlineTemplate: true }).content, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }
+}).outputText.replaceAll('from "vue"', 'from "/vue.js"').replaceAll("from 'vue'", "from '/vue.js'").replaceAll('from "~/utils/searchText"', 'from "/search-text.js"').replaceAll("from '~/utils/searchText'", "from '/search-text.js'")
+const searchTextJs = ts.transpileModule(readFileSync('app/utils/searchText.ts', 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
 const en = JSON.parse(readFileSync('i18n/locales/en.json'))
 const fa = JSON.parse(readFileSync('i18n/locales/fa-AF.json'))
 const html = `<html><meta charset="utf-8"><link rel="stylesheet" href="/style.css"><style>${descriptor.styles[0].content}</style><div id="app"></div><script type="module">
@@ -30,6 +36,15 @@ const server = createServer((req, res) => {
   if (req.url === '/panel.js') {
     res.setHeader('Content-Type', 'text/javascript')
     res.end(js)
+  } else if (req.url === '/components.js') {
+    res.setHeader('Content-Type', 'text/javascript')
+    res.end("export { default as SearchableSelect } from '/searchable-select.js'")
+  } else if (req.url === '/searchable-select.js') {
+    res.setHeader('Content-Type', 'text/javascript')
+    res.end(searchableJs)
+  } else if (req.url === '/search-text.js') {
+    res.setHeader('Content-Type', 'text/javascript')
+    res.end(searchTextJs)
   } else if (files[req.url]) {
     res.setHeader('Content-Type', req.url.endsWith('.js') ? 'text/javascript' : 'text/css')
     res.end(readFileSync(files[req.url]))
@@ -44,6 +59,7 @@ let browser
 try {
   browser = await chromium.launch({
     headless: true,
+    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {})
   })
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
@@ -55,7 +71,8 @@ try {
   const url = `http://127.0.0.1:${server.address().port}`
   await page.goto(url)
   await page.getByPlaceholder('Enter student first and last name...').fill('Ahmad')
-  await page.getByRole('button', { name: /Ahmad Test/ }).click()
+  await page.getByRole('option', { name: /Ahmad Test/ }).click()
+  const chooseClass = async name => { const input = page.locator('.registration-row .searchable-select input').last(); await input.fill(name); await page.getByRole('option', { name: new RegExp(name) }).first().click() }
   await page.getByRole('button', { name: 'Continue this class' }).first().waitFor()
   assert.equal(await page.getByRole('button', { name: 'Continue this class' }).count(), 2)
   await page.getByRole('button', { name: 'Continue this class' }).first().click()
@@ -68,7 +85,7 @@ try {
   await page.getByRole('button', { name: 'New Student', exact: true }).click()
   await page.getByRole('button', { name: 'Add Class', exact: true }).click()
   await page.getByLabel('First Name', { exact: true }).fill('New Person')
-  await page.getByLabel('Class', { exact: true }).selectOption('c2')
+  await chooseClass('Computer')
   await page.getByLabel('Initial Payment (PKR)', { exact: true }).fill('100')
   await page.getByLabel('Actual payment date', { exact: true }).fill('2026-11-20')
   await page.getByLabel(/Actual payment method/).selectOption('bank')
@@ -80,7 +97,7 @@ try {
   assert.equal(calls.at(-1).args.p_payload.classes[0].payment_method, 'bank')
 
   await page.getByRole('button', { name: 'Add Class', exact: true }).click()
-  await page.getByLabel('Class', { exact: true }).selectOption('c2')
+  await chooseClass('Computer')
   await page.getByLabel('Registration Date', { exact: true }).fill('2026-11-21')
   await page.getByText(/half the original monthly class fee/).waitFor()
   assert.ok(await page.getByText('PKR 500.00', { exact: true }).count() >= 1)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ClassItem, Student } from '~/types/models'
+import { SearchableSelect } from '#components'
 
 interface RegistrationClassRow {
   class_id: string
@@ -28,15 +29,17 @@ const db = useSupabase()
 const auth = useAuth()
 const { t, locale } = useLanguage()
 const key = useRequestKey()
+const route = useRoute()
 const emit = defineEmits<{ saved: [] }>()
 
 const month = ref(nowMonth())
 const date = ref(todayKarachi())
 const mode = ref<'returning' | 'new'>('returning')
 const query = ref('')
-const classQuery = ref('')
 const results = ref<any[]>([])
+const selectedStudentId = ref('')
 const selected = ref<Student | null>(null)
+const editingSelectedProfile = ref(false)
 const previous = ref<any[]>([])
 const currentAccounts = ref<any[]>([])
 const currentPayments = ref<any[]>([])
@@ -85,9 +88,7 @@ const monthEnd = computed(() => isValidMonth(month.value)
   : '')
 
 const visibleClasses = computed(() => {
-  const search = classQuery.value.trim().toLocaleLowerCase()
-  return classes.value.filter(classItem => !search
-    || `${classItem.title} ${classItem.teacher?.full_name || ''}`.toLocaleLowerCase().includes(search))
+  return classes.value
 })
 
 // Standard teacher entitlement is 50% of the approved base tuition
@@ -186,9 +187,18 @@ onBeforeUnmount(() => {
 
 async function choose(student: Student) {
   selected.value = student
+  editingSelectedProfile.value = false
   results.value = []
   query.value = ''
   await history()
+}
+
+async function chooseSearchResult(id: string) {
+  const student = results.value.find(item => item.id === id)
+  if (!student) return
+  selectedStudentId.value = id
+  await choose(student as Student)
+  selectedStudentId.value = ''
 }
 
 async function history() {
@@ -210,6 +220,9 @@ async function history() {
     if (version !== historyVersion) return
     if (result.error) throw result.error
     previous.value = result.data || []
+    const activeLinks = await allRows(() => db.from('enrollments').select('class_id,enrolled_on')
+      .eq('student_id', selected.value!.id).eq('active', true).order('enrolled_on'))
+    if (version !== historyVersion) return
     if (period.data && auth.canFinance.value) {
       const accounts = await allRows(() => db.from('month_fee_overview').select('*')
         .eq('period_id', period.data!.id).eq('student_id', selected.value!.id).order('class_name'))
@@ -218,6 +231,15 @@ async function history() {
       const ids = accounts.map((account: any) => account.id)
       if (ids.length) currentPayments.value = await allRows(() => db.from('payments').select('*')
         .in('monthly_membership_id', ids).order('paid_on', { ascending: false }))
+    }
+    const approvedForClass = new Map<string, any>()
+    for (const record of [...previous.value].sort((a, b) => String(b.year_month).localeCompare(String(a.year_month)))) {
+      if (financiallyApproved(record) && !approvedForClass.has(record.class_id)) approvedForClass.set(record.class_id, record)
+    }
+    for (const link of activeLinks) {
+      if (alreadyRegisteredClassIds.value.has(link.class_id) || rows.value.some(row => row.class_id === link.class_id)) continue
+      const prior = approvedForClass.get(link.class_id)
+      if (prior) applyPreviousArrangement(prior, false, true)
     }
     suggestLatestApprovedArrangement()
   } catch (cause) {
@@ -233,7 +255,7 @@ function startExistingPayment(account: any) {
   existingPaymentAccount.value = account
   existingPaymentAmount.value = Number(account.balance_due)
   existingPaymentDate.value = todayKarachi()
-  existingPaymentMethod.value = ''
+  existingPaymentMethod.value = 'cash'
   existingPaymentNote.value = ''
 }
 
@@ -288,7 +310,7 @@ function blankRow(classId = ''): RegistrationClassRow {
     arrangement_notes: '',
     payment: 0,
     paid_on: '',
-    payment_method: '',
+    payment_method: 'cash',
     payment_reference: '',
     payment_note: '',
     is_modifying: false
@@ -355,7 +377,7 @@ function applyPreviousArrangement(record: any, modifying = false, suggestion = f
     arrangement_notes: record.notes || '',
     payment: 0,
     paid_on: '',
-    payment_method: '',
+    payment_method: 'cash',
     payment_reference: '',
     payment_note: '',
     is_modifying: modifying,
@@ -406,13 +428,13 @@ watch(mode, () => {
   historyVersion++
   loading.value = false
   selected.value = null
+  editingSelectedProfile.value = false
   previous.value = []
   currentAccounts.value = []
   currentPayments.value = []
   existingPaymentAccount.value = null
   rows.value = []
   query.value = ''
-  classQuery.value = ''
   error.value = ''
   success.value = ''
   key.reset()
@@ -424,6 +446,13 @@ onMounted(async () => {
     classes.value = await allRows(() => db.from('class_rooms')
       .select('*,teacher:teachers(full_name)').eq('active', true).order('id')) as ClassItem[]
     await checkPeriod()
+    const studentId = typeof route.query.student === 'string' ? route.query.student : ''
+    if (studentId) {
+      const result = await db.from('students').select('*').eq('id', studentId).maybeSingle()
+      if (result.error) throw result.error
+      const profile = result.data
+      if (profile) await choose(profile as Student)
+    }
   } catch (cause) {
     error.value = financialError(cause)
   }
@@ -506,12 +535,54 @@ async function save() {
 
 function nextStudent() {
   selected.value = null
+  editingSelectedProfile.value = false
   previous.value = []
   rows.value = []
   query.value = ''
   results.value = []
   success.value = ''
   key.reset()
+}
+
+function editSelectedProfile() {
+  if (!selected.value) return
+  Object.assign(person, {
+    first_name: selected.value.first_name || '',
+    last_name: selected.value.last_name || '',
+    guardian_name: selected.value.guardian_name || '',
+    phone: selected.value.phone || '',
+    guardian_phone: selected.value.guardian_phone || '',
+    address: selected.value.address || '',
+    notes: selected.value.notes || ''
+  })
+  editingSelectedProfile.value = true
+}
+
+async function saveSelectedProfile() {
+  if (!db || !selected.value || saving.value) return
+  if (!person.first_name.trim()) {
+    error.value = t('students.nameRequired')
+    return
+  }
+  saving.value = true
+  error.value = ''
+  try {
+    const changes = {
+      first_name: person.first_name.trim(), last_name: person.last_name.trim(),
+      guardian_name: person.guardian_name || null, phone: person.phone || null,
+      guardian_phone: person.guardian_phone || null, address: person.address || null,
+      notes: person.notes || null
+    }
+    const result = await db.from('students').update(changes).eq('id', selected.value.id)
+    if (result.error) throw result.error
+    selected.value = { ...selected.value, ...changes } as Student
+    editingSelectedProfile.value = false
+    success.value = t('students.saveSuccess')
+  } catch (cause) {
+    error.value = financialError(cause)
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
@@ -572,23 +643,12 @@ function nextStudent() {
 
           <!-- Returning Student Search -->
           <template v-if="mode === 'returning'">
-            <label class="student-search-input">
-              {{ t('registration.search') }}
-              <input v-model="query" :placeholder="t('registration.placeholder')" autocomplete="off" />
+            <label class="student-search-input">{{ t('registration.search') }}
+              <SearchableSelect v-model="selectedStudentId" :options="results" remote label-key="first_name" :search-keys="['last_name','student_code','guardian_name','phone','guardian_phone']" :placeholder="t('registration.placeholder')" :min-chars="2" @search="query = $event" @update:model-value="chooseSearchResult" selected-suffix-key="student_code">
+                <template #option="{ option }"><strong>{{ option.first_name }} {{ option.last_name }}</strong> · {{ option.student_code }}<span>{{ option.last_classes || t('registration.noHistory') }} · {{ option.last_month || '—' }}</span></template>
+              </SearchableSelect>
             </label>
             <p v-if="searching" role="status">{{ t('common.loading') }}</p>
-            <div v-if="results.length" class="registration-results">
-              <button
-                v-for="student in results"
-                :key="student.id"
-                type="button"
-                class="quick-item"
-                @click="choose(student)"
-              >
-                <strong>{{ student.first_name }} {{ student.last_name }} · {{ student.student_code }}</strong>
-                <span>{{ student.guardian_name ? `${student.guardian_name} · ` : '' }}{{ student.last_classes || t('registration.noHistory') }} · {{ student.last_month || '—' }}</span>
-              </button>
-            </div>
             <p v-if="query.trim().length >= 2 && !searching && !results.length" class="hint">
               {{ t('registration.noResults') }}
             </p>
@@ -604,11 +664,17 @@ function nextStudent() {
                   {{ t('common.close') }}
                 </button>
               </div>
-              <div class="profile-details">
+              <div v-if="editingSelectedProfile" class="profile-details form-grid">
+                <label v-for="field in (['first_name','last_name','guardian_name','phone','guardian_phone','address'] as const)" :key="field">{{ t(`registration.${field}`) }}<input v-model="person[field]" :required="field === 'first_name'" :type="field.includes('phone') ? 'tel' : 'text'" /></label>
+                <label class="wide">{{ t('registration.notes') }}<textarea v-model="person.notes" rows="2" /></label>
+                <div class="form-footer wide"><button type="button" class="btn" @click="editingSelectedProfile = false">{{ t('common.cancel') }}</button><button type="button" class="btn primary" :disabled="saving" @click="saveSelectedProfile">{{ saving ? t('common.saving') : t('common.save') }}</button></div>
+              </div>
+              <div v-else class="profile-details">
                 <span v-if="selected.guardian_name">{{ t('registration.guardian_name') }}: <strong>{{ selected.guardian_name }}</strong></span>
                 <span v-if="selected.phone">{{ t('registration.phone') }}: <strong>{{ selected.phone }}</strong></span>
                 <span v-if="selected.address">{{ t('registration.address') }}: <strong>{{ selected.address }}</strong></span>
                 <span v-if="selected.notes">{{ t('registration.notes') }}: <em>{{ selected.notes }}</em></span>
+                <button type="button" class="btn small-btn" @click="editSelectedProfile">{{ t('common.edit') }}</button>
               </div>
             </div>
             <section v-if="currentAccounts.length" class="form-section current-accounts-section">
@@ -622,7 +688,7 @@ function nextStudent() {
                 <div v-if="existingPaymentAccount?.id === account.id" class="existing-payment-form">
                   <div class="form-grid"><label>{{ t('registration.payment') }} *<input v-model.number="existingPaymentAmount" type="number" min="0.01" :max="account.balance_due" step="0.01" required /></label>
                     <label>{{ t('registration.paymentDate') }} *<input v-model="existingPaymentDate" type="date" required /></label>
-                    <label>{{ t('registration.paymentMethod') }} *<select v-model="existingPaymentMethod" required><option value="">{{ t('registration.choosePaymentMethod') }}</option><option value="cash">{{ t('financialUi.finance.cash') }}</option><option value="bank">{{ t('financialUi.finance.bank') }}</option><option value="other">{{ t('financialUi.expenses.other') }}</option></select></label>
+                  <label>{{ t('registration.paymentMethod') }} *<select v-model="existingPaymentMethod" required><option value="cash">{{ t('financialUi.finance.cash') }}</option><option value="bank">{{ t('financialUi.finance.bank') }}</option><option value="other">{{ t('financialUi.expenses.other') }}</option></select></label>
                     <label>{{ t('registration.paymentNote') }}<input v-model="existingPaymentNote" /></label></div>
                   <div class="form-footer"><button type="button" class="btn" @click="existingPaymentAccount = null">{{ t('common.cancel') }}</button><button type="button" class="btn primary" :disabled="saving || closed" @click="saveExistingPayment">{{ t('registration.registerPayment') }}</button></div>
                 </div>
@@ -764,11 +830,6 @@ function nextStudent() {
 
           <!-- Class Search / Filter -->
           <h3>{{t('agreements.classSection')}}</h3>
-        <label class="class-search">
-            {{ t('registration.classSearch') }}
-            <input v-model="classQuery" :placeholder="t('registration.classSearchPlaceholder')" />
-          </label>
-
           <!-- Class Agreements List -->
           <div v-if="!rows.length" class="empty-classes-notice">
             <p>{{ t('registration.selectClasses') }}</p>
@@ -807,17 +868,9 @@ function nextStudent() {
             <div class="form-grid registration-compact-grid">
               <label class="wide">
                 {{ t('registration.class') }}
-                <select
-                  v-model="row.class_id"
-                  required
-                  :aria-label="t('registration.class')"
-                  @change="onClassSelected(row)"
-                >
-                  <option value="">{{ t('financialUi.select') }}</option>
-                  <option v-for="classItem in visibleClasses" :key="classItem.id" :value="classItem.id" :disabled="mode === 'returning' && alreadyRegisteredClassIds.has(classItem.id)">
-                    {{ classItem.title }} · {{ classItem.teacher?.full_name }} · {{ classItem.start_time ? `${timeShort(classItem.start_time)}–${timeShort(classItem.end_time)}` : t('agreements.noSchedule') }}
-                  </option>
-                </select>
+                <SearchableSelect v-model="row.class_id" :options="visibleClasses.filter(item => mode !== 'returning' || !alreadyRegisteredClassIds.has(item.id) || item.id === row.class_id)" label-key="title" :search-keys="['teacher.full_name']" :placeholder="t('registration.classSearchPlaceholder')" :min-chars="2" @update:model-value="onClassSelected(row)">
+                  <template #option="{ option }">{{ option.title }} · {{ option.teacher?.full_name }} · {{ option.start_time ? `${timeShort(option.start_time)}–${timeShort(option.end_time)}` : t('agreements.noSchedule') }}</template>
+                </SearchableSelect>
               </label>
 
               <label>
@@ -874,7 +927,6 @@ function nextStudent() {
                 </label>
                 <label>{{ t('registration.paymentMethod') }} *
                   <select v-model="row.payment_method" required>
-                    <option value="">{{ t('registration.choosePaymentMethod') }}</option>
                     <option value="cash">{{ t('financialUi.finance.cash') }}</option>
                     <option value="bank">{{ t('financialUi.finance.bank') }}</option>
                     <option value="other">{{ t('financialUi.expenses.other') }}</option>
@@ -919,9 +971,6 @@ function nextStudent() {
 
           </article>
 
-          <p v-if="classQuery && !visibleClasses.length" class="hint">
-            {{ t('registration.noClassesMatch') }}
-          </p>
 
           <button class="btn" type="button" @click="rows.push(blankRow())">+ {{ t('registration.addClass') }}</button>
         </section>

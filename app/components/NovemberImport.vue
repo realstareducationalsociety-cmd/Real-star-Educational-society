@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SearchableSelect } from '#components'
 import { AlertCircle, CheckCircle2, DatabaseZap, RefreshCw, Upload } from 'lucide-vue-next'
 
 /** Checksum of the existing November 2026 staging batch. No new staging rows are created. */
@@ -507,7 +508,7 @@ onMounted(async () => {
             <select v-model="draftFor(row).student_action"><option value="create">{{ t('novemberImport.createNew') }}</option><option value="match">{{ t('novemberImport.matchExisting') }}</option></select>
           </label>
           <label v-if="draftFor(row).student_action === 'match'">{{ t('novemberImport.selectStudent') }}
-            <select v-model="draftFor(row).student_id"><option value="">{{ t('financialUi.select') }}</option><option v-for="student in students" :key="student.id" :value="student.id">{{ student.student_code }} · {{ student.first_name }} {{ student.last_name }}</option></select>
+            <SearchableSelect v-model="draftFor(row).student_id" :options="students" label-key="first_name" :search-keys="['last_name','student_code']" :placeholder="t('financialUi.select')" :min-chars="2" required selected-suffix-key="student_code"><template #option="{option}">{{option.student_code}} · {{option.first_name}} {{option.last_name}}</template></SearchableSelect>
           </label>
           <template v-if="draftFor(row).student_action === 'create'">
             <label>{{ t('students.form.firstName') }}<input v-model="draftFor(row).first_name" /></label>
@@ -518,7 +519,7 @@ onMounted(async () => {
             <select v-model="draftFor(row).identity_scope"><option value="group">{{ t('novemberImport.samePersonGroup', { count: sameIdentityCount(row) }) }}</option><option value="row">{{ t('novemberImport.separateSourceRow') }}</option></select>
           </label>
           <label>{{ t('novemberImport.class') }}
-            <select v-model="draftFor(row).class_id"><option value="">{{ t('novemberImport.noClassYet') }}</option><option v-for="classItem in classes" :key="classItem.id" :value="classItem.id">{{ classItem.title }} · {{ classItem.teacherName }} · {{ timeLabel(classItem.start_time, classItem.end_time, null) }}</option></select>
+            <SearchableSelect v-model="draftFor(row).class_id" :options="classes" label-key="title" :search-keys="['teacherName','start_time']" :placeholder="t('novemberImport.selectClass')" :allow-empty="true" :empty-label="t('novemberImport.noClassYet')"><template #option="{option}">{{option.title}} · {{option.teacherName}} · {{timeLabel(option.start_time, option.end_time, null)}}</template></SearchableSelect>
           </label>
           <label class="wide">{{ t('novemberImport.note') }}<input v-model="draftFor(row).note" minlength="4" /></label>
         </div>
@@ -533,7 +534,7 @@ onMounted(async () => {
         <p class="hint">{{ t('novemberImport.financeHint') }}</p>
         <div class="form-grid">
           <label>{{ t('novemberImport.class') }}
-            <select v-model="draftFor(row).class_id"><option value="">{{ t('novemberImport.selectClass') }}</option><option v-for="classItem in classes" :key="classItem.id" :value="classItem.id">{{ classItem.title }} · {{ classItem.teacherName }} · {{ timeLabel(classItem.start_time, classItem.end_time, null) }}</option></select>
+            <SearchableSelect v-model="draftFor(row).class_id" :options="classes" label-key="title" :search-keys="['teacherName','start_time']" :placeholder="t('novemberImport.selectClass')" required><template #option="{option}">{{option.title}} · {{option.teacherName}} · {{timeLabel(option.start_time, option.end_time, null)}}</template></SearchableSelect>
           </label>
           <label>{{ t('novemberImport.tuition') }}<input v-model="draftFor(row).tuition" type="number" min="0" step="0.01" /></label>
           <label>{{ t('novemberImport.discount') }}<input v-model="draftFor(row).discount" type="number" min="0" step="0.01" /></label>
@@ -551,7 +552,7 @@ onMounted(async () => {
       <div v-if="(row.identity_status === 'created' || row.identity_status === 'matched') && !row.enrollment_id" class="profile-review">
         <h3>{{ t('novemberImport.linkClassOnly') }}</h3>
         <label>{{ t('novemberImport.class') }}
-          <select v-model="draftFor(row).class_id"><option value="">{{ t('novemberImport.selectClass') }}</option><option v-for="classItem in classes" :key="classItem.id" :value="classItem.id">{{ classItem.title }} · {{ classItem.teacherName }} · {{ timeLabel(classItem.start_time, classItem.end_time, null) }}</option></select>
+          <SearchableSelect v-model="draftFor(row).class_id" :options="classes" label-key="title" :search-keys="['teacherName','start_time']" :placeholder="t('novemberImport.selectClass')" required><template #option="{option}">{{option.title}} · {{option.teacherName}} · {{timeLabel(option.start_time, option.end_time, null)}}</template></SearchableSelect>
         </label>
         <label class="approval-check"><input v-model="draftFor(row).class_confirmed" type="checkbox" />{{ t('novemberImport.confirmClass') }}</label>
         <label>{{ t('novemberImport.note') }}<input v-model="draftFor(row).note" minlength="4" /></label>

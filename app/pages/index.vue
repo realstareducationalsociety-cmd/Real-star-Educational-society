@@ -53,6 +53,7 @@ onMounted(load)
     </PageTitle>
     <Notice :message="error" kind="error" />
     <RegistrationStatistics :key="registrationRevision" />
+    <ClassRegistrationOverview />
     <MonthlyRegistration v-if="auth.canEducation.value" @saved="registrationSaved" />
     <OfficeSummary v-if="auth.canFinance.value" :key="registrationRevision" />
     <div class="grid-two dashboard-grid">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SearchableSelect } from '#components'
 import { RefreshCw } from 'lucide-vue-next'
 
 interface FeeCandidate {
@@ -277,8 +278,8 @@ watch(isAdmin, value => { if (value) void load() }, { immediate: true })
       <div v-for="row in needsIdentityClassReview" :key="row.candidate_id" class="identity-review-row">
         <strong>{{ row.student_name || '—' }}</strong><small>{{ row.source_key }} · {{ row.current_class || t('novemberFinalize.needsClass') }}</small>
         <div class="form-grid">
-          <label>{{ t('novemberFinalize.existingStudent') }}<select v-model="linkDraftFor(row).student_id"><option value="">{{ t('financialUi.select') }}</option><option v-for="student in existingStudents" :key="student.id" :value="student.id">{{ student.student_code }} · {{ student.first_name }} {{ student.last_name }}</option></select></label>
-          <label>{{ t('novemberFinalize.existingClass') }}<select v-model="linkDraftFor(row).class_id"><option value="">{{ t('financialUi.select') }}</option><option v-for="item in activeClasses" :key="item.id" :value="item.id">{{ classLabel(item) }}</option></select></label>
+          <label>{{ t('novemberFinalize.existingStudent') }}<SearchableSelect v-model="linkDraftFor(row).student_id" :options="existingStudents" label-key="first_name" :search-keys="['last_name','student_code']" selected-suffix-key="student_code" :placeholder="t('financialUi.select')" :min-chars="2" required><template #option="{option}">{{option.student_code}} · {{option.first_name}} {{option.last_name}}</template></SearchableSelect></label>
+          <label>{{ t('novemberFinalize.existingClass') }}<SearchableSelect v-model="linkDraftFor(row).class_id" :options="activeClasses" label-key="title" :search-keys="['teacher_name','start_time','end_time']" :placeholder="t('financialUi.select')" :min-chars="2" required><template #option="{option}">{{option.title}} · {{option.teacher_name}} · {{option.start_time}}–{{option.end_time}}</template></SearchableSelect></label>
           <label class="wide">{{ t('novemberFinalize.reviewReason') }}<input v-model="linkDraftFor(row).reason" minlength="4" /></label>
         </div>
         <button class="btn" :disabled="saving" @click="linkExisting(row)">{{ t('novemberFinalize.linkExisting') }}</button>
