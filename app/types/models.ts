@@ -1,4 +1,4 @@
-export interface Student { id: string; student_code: string; first_name: string; last_name: string; guardian_name: string | null; phone: string | null; guardian_phone: string | null; address: string | null; active: boolean; registered_on: string; notes: string | null; updated_at: string; created_at: string }
+export interface Student { id: string; student_code: string; first_name: string; last_name: string; guardian_name: string | null; phone: string | null; guardian_phone: string | null; address: string | null; active: boolean; registered_on: string; notes: string | null; updated_at: string; created_at: string; renewal_reminder_recipient?: 'student' | 'guardian' }
 export interface Teacher { id: string; full_name: string; phone: string | null; active: boolean; created_at: string }
 export interface ClassItem { id: string; title: string; teacher_id: string; default_fee: number; start_time: string | null; end_time: string | null; active: boolean; teacher?: { full_name: string } | null }
 export interface Enrollment { id: string; student_id: string; class_id: string; active: boolean; enrolled_on: string; student?: Student | null; class_item?: ClassItem | null }

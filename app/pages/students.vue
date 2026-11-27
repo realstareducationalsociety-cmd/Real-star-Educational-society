@@ -50,7 +50,10 @@ const profileStudent = ref<Student | null>(null)
 const profileOpen = ref(false)
 const profileLoading = ref(false)
 const profileError = ref('')
+const renewalMessageConsents = ref<any[]>([])
+const renewalConsentBusy = ref('')
 const historyError = ref('')
+const historyWarning = ref('')
 const archiveStudentBusy = ref(false)
 const withdrawingProfileLink = ref('')
 const studentFinanceGuard = ref<Record<string, any>>({})
@@ -376,26 +379,44 @@ async function openHistory(student: Student, showStandalone = true) {
   historyAccounts.value = []
   historyMaterials.value = []
   historyError.value = ''
+  historyWarning.value = ''
   historyOpen.value = showStandalone
   historyLoading.value = true
   try {
-    const [legacyRows, registrationResult, links, periods, auditRows] = await Promise.all([
+    const historyRequests = await Promise.allSettled([
       allRows(() => supabase.from('v_historical_student_classes')
         .select('*').eq('student_id', student.id).order('year_month', { ascending: false })),
-      supabase.rpc('monthly_registration_list', { p_month: null, p_student: student.id }),
-      allRows(() => supabase.from('enrollments')
+      (async () => {
+        const result = await supabase!.rpc('monthly_registration_list', { p_month: null, p_student: student.id })
+        if (result.error) throw result.error
+        return Array.isArray(result.data) ? result.data : []
+      })(),
+      allRows(() => supabase!.from('enrollments')
         .select('id,student_id,class_id,enrolled_on,active,class_item:class_rooms(title,start_time,end_time,teacher:teachers(full_name))')
         .eq('student_id', student.id).order('enrolled_on', { ascending: false }).order('id')),
-      allRows(() => supabase.from('billing_periods').select('id,year_month').order('year_month')),
-      auth.profile.value?.role === 'admin' ? allRows(() => supabase.from('audit_logs')
+      allRows(() => supabase!.from('billing_periods').select('id,year_month').order('year_month')),
+      auth.profile.value?.role === 'admin' ? allRows(() => supabase!.from('audit_logs')
         .select('id,action,row_id,created_at,old_data,new_data')
         .eq('table_name', 'enrollments')
         .or(`old_data->>student_id.eq.${student.id},new_data->>student_id.eq.${student.id}`)
         .order('created_at', { ascending: false })) : Promise.resolve([])
     ])
-    if (registrationResult.error) throw registrationResult.error
+    const requestNames = ['historical import rows', 'monthly registration RPC', 'class enrollment links', 'billing periods', 'class audit events']
+    const values: any[] = []
+    for (let index = 0; index < historyRequests.length; index++) {
+      const request = historyRequests[index]
+      if (!request) continue
+      if (request.status === 'fulfilled') { values.push(request.value); continue }
+      const cause = request.reason
+      const detail = cause && typeof cause === 'object' ? { code: cause.code, message: cause.message } : { message: String(cause) }
+      console.error(`[student-history] ${requestNames[index]} failed`, detail)
+      if (index === 1 || index === 2 || index === 3) throw cause
+      historyWarning.value = t('students.historyPartialWarning')
+      values.push([])
+    }
+    const [legacyRows, registrations, links, periods, auditRows] = values
     historyRows.value = legacyRows as any[]
-    historyRegistrations.value = (Array.isArray(registrationResult.data) ? registrationResult.data : []) as MonthlyRegistration[]
+    historyRegistrations.value = registrations as MonthlyRegistration[]
     historyLinks.value = links as any[]
     historyEvents.value = auditRows as any[]
 
@@ -467,9 +488,56 @@ async function openStudentProfile(student: Student) {
   profileOpen.value = true
   profileLoading.value = true
   profileError.value = ''
-  try { await openHistory(student, false) }
+  try {
+    renewalMessageConsents.value = []
+    await openHistory(student, false)
+    if (supabase && auth.profile.value?.role === 'admin') {
+      const consents = await supabase.rpc('get_student_renewal_message_consents', { p_student: student.id })
+      if (consents.error) {
+        console.error('[student-profile] renewal consent history failed', { code: consents.error.code, message: consents.error.message })
+        historyWarning.value = t('students.historyPartialWarning')
+      } else renewalMessageConsents.value = consents.data || []
+    }
+  }
   catch (cause) { profileError.value = errText(cause) }
   finally { profileLoading.value = false }
+}
+
+async function revokeHistoricalRenewalConsent(consent: any) {
+  if (!supabase || auth.profile.value?.role !== 'admin' || !profileStudent.value || renewalConsentBusy.value) return
+  const note = window.prompt(t('renewalReminders.revokePrompt'))
+  if (!note || note.trim().length < 4) return
+  renewalConsentBusy.value = consent.phone_e164
+  profileError.value = ''
+  try {
+    const result = await supabase.rpc('record_guardian_message_consent', {
+      p_student: profileStudent.value.id,
+      p_recipient: consent.recipient_type,
+      p_phone: consent.phone_e164,
+      p_consented: false,
+      p_note: note.trim()
+    })
+    if (result.error) throw result.error
+    const refreshed = await supabase.rpc('get_student_renewal_message_consents', { p_student: profileStudent.value.id })
+    if (refreshed.error) throw refreshed.error
+    renewalMessageConsents.value = refreshed.data || []
+  } catch (cause) { profileError.value = errText(cause) }
+  finally { renewalConsentBusy.value = '' }
+}
+
+async function setRenewalReminderRecipient(recipient: 'student' | 'guardian') {
+  if (!supabase || auth.profile.value?.role !== 'admin' || !profileStudent.value) return
+  profileError.value = ''
+  try {
+    const result = await supabase.rpc('set_renewal_reminder_recipient', {
+      p_student: profileStudent.value.id,
+      p_recipient: recipient
+    })
+    if (result.error) throw result.error
+    profileStudent.value.renewal_reminder_recipient = recipient
+    const listStudent = rows.value.find(row => row.id === profileStudent.value?.id)
+    if (listStudent) listStudent.renewal_reminder_recipient = recipient
+  } catch (cause) { profileError.value = errText(cause) }
 }
 
 async function openClassChange(student: Student) {
@@ -636,10 +704,18 @@ watch(month, load)
     </ModalBox>
     <ModalBox :open="profileOpen" :title="t('students.profileTitle')" @close="profileOpen = false">
       <Notice :message="profileError || historyError" kind="error" />
+      <Notice :message="historyWarning" kind="info" />
       <div v-if="profileStudent" class="student-profile-overview">
         <header><h3>{{ profileStudent.first_name }} {{ profileStudent.last_name }}</h3><span class="badge info" dir="ltr">{{ profileStudent.student_code }}</span></header>
         <p>{{ profileStudent.active ? t('students.activeProfiles') : t('students.archivedProfiles') }}</p>
         <p>{{ profileStudent.guardian_name || '—' }} · {{ profileStudent.phone || profileStudent.guardian_phone || '—' }}</p>
+        <label v-if="auth.profile.value?.role === 'admin'" class="reminder-recipient-setting">{{ t('renewalReminders.defaultRecipient') }}
+          <select :value="profileStudent.renewal_reminder_recipient || 'guardian'" @change="setRenewalReminderRecipient(($event.target as HTMLSelectElement).value as 'student' | 'guardian')"><option value="guardian">{{ t('renewalReminders.guardian') }}</option><option value="student">{{ t('renewalReminders.student') }}</option></select>
+        </label>
+        <details v-if="auth.profile.value?.role === 'admin'" class="renewal-consent-profile"><summary>{{ t('renewalReminders.consentHistory') }}</summary>
+          <p v-if="!renewalMessageConsents.length" class="hint">{{ t('renewalReminders.noConsentHistory') }}</p>
+          <div v-for="consent in renewalMessageConsents" :key="`${consent.recipient_type}-${consent.phone_e164}`" class="summary-row"><span>{{ t(consent.recipient_type === 'student' ? 'renewalReminders.student' : 'renewalReminders.guardian') }} · <bdi dir="ltr">{{ consent.phone_e164 }}</bdi> · {{ consent.is_active ? t('renewalReminders.consentRecorded') : t('renewalReminders.consentRevoked') }}</span><button v-if="consent.is_active" class="btn small-btn light" :disabled="renewalConsentBusy === consent.phone_e164" @click="revokeHistoricalRenewalConsent(consent)">{{ t('renewalReminders.revokeConsent') }}</button></div>
+        </details>
         <div class="profile-shortcuts">
           <button v-if="auth.canEducation.value && profileStudent.active" class="btn primary" @click="profileOpen = false; navigateTo({ path: '/enrollments', query: { student: profileStudent.id } })">{{ t('students.monthlyRegistrationShortcut') }}</button>
           <button v-if="auth.profile.value?.role === 'admin' && profileStudent.student_code === NOORZIA_CODE" class="btn" @click="profileOpen = false; openNoorziaCorrection(profileStudent)">{{ t('students.noorziaCorrection') }}</button>
@@ -732,6 +808,7 @@ watch(month, load)
     </ModalBox>
     <ModalBox :open="historyOpen" :title="t('students.classHistory')" @close="historyOpen = false">
       <Notice :message="historyError" kind="error" />
+      <Notice :message="historyWarning" kind="info" />
       <p v-if="historyStudent" class="hint">{{ historyStudent.first_name }} {{ historyStudent.last_name }} · {{ historyStudent.student_code }}</p>
       <p class="hint">{{ t('students.historyDisclaimer') }}</p>
       <div v-if="historyLoading" class="empty">{{ t('common.loading') }}</div>

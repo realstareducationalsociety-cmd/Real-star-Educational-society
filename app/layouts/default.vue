@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  BookOpen, ChevronLeft, ChevronRight, GraduationCap, LayoutDashboard,
+  Archive, BookOpen, ChevronLeft, ChevronRight, GraduationCap, LayoutDashboard,
   LogOut, Menu, Receipt, Users, Wallet, HandCoins, UserPlus, PanelLeftClose,
   PanelLeftOpen, FileSpreadsheet
 } from 'lucide-vue-next'
@@ -24,6 +24,7 @@ const groups = computed(() => {
     { to: '/settlements', label: t('nav.settlements'), icon: HandCoins },
     { to: '/expenses', label: t('nav.expenses'), icon: Receipt },
     { to: '/reports/monthly', label: t('nav.reports'), icon: Receipt },
+    { to: '/monthly-archive', label: t('nav.monthlyArchive'), icon: Archive },
     { to: '/adjustments', label: t('nav.adjustments'), icon: Receipt },
     { to: '/partners', label: t('nav.partners'), icon: Wallet }
   ] : []

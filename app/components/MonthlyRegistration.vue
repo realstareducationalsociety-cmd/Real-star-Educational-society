@@ -110,6 +110,10 @@ const totalBalance = computed(() => rows.value.reduce((s, r) => s + balanceDue(r
 
 const latest = (record: any) => !previous.value.some(other => other.class_id === record.class_id && other.year_month > record.year_month)
 const financiallyApproved = (record: any) => !!(record.agreement_approved_at && record.agreement_approved_by)
+const canCarryForwardAutomatically = (record: any) => financiallyApproved(record)
+  && Number(record.discount || 0) === 0
+  && !record.is_exception
+  && record.calculation_mode !== 'manual'
 const alreadyRegisteredClassIds = computed(() => new Set(currentAccounts.value.filter(row => row.registration_active !== false).map(row => row.class_id)))
 function accountPaymentStatus(account: any) {
   if (account.confirmation_status === 'fully_sponsored') return 'sponsored'
@@ -145,7 +149,7 @@ function setDiscountReason(row: RegistrationClassRow, type: NonNullable<Registra
 function suggestLatestApprovedArrangement() {
   if (rows.value.length || !previous.value.length) return
   const suggestion = [...previous.value]
-    .filter(record => financiallyApproved(record)
+    .filter(record => canCarryForwardAutomatically(record)
       && latest(record)
       && classes.value.some(item => item.id === record.class_id && item.active !== false)
       && !alreadyRegisteredClassIds.value.has(record.class_id))
@@ -234,12 +238,23 @@ async function history() {
     }
     const approvedForClass = new Map<string, any>()
     for (const record of [...previous.value].sort((a, b) => String(b.year_month).localeCompare(String(a.year_month)))) {
-      if (financiallyApproved(record) && !approvedForClass.has(record.class_id)) approvedForClass.set(record.class_id, record)
+      if (!approvedForClass.has(record.class_id)) approvedForClass.set(record.class_id, record)
     }
     for (const link of activeLinks) {
       if (alreadyRegisteredClassIds.value.has(link.class_id) || rows.value.some(row => row.class_id === link.class_id)) continue
       const prior = approvedForClass.get(link.class_id)
-      if (prior) applyPreviousArrangement(prior, false, true)
+      if (prior && canCarryForwardAutomatically(prior)) applyPreviousArrangement(prior, false, true)
+      else {
+        const item = classes.value.find(current => current.id === link.class_id)
+        const row = blankRow(link.class_id)
+        if (item && Number(item.default_fee) > 0) {
+          row.original_fee = Number(item.default_fee)
+          row.agreed_fee = Number(item.default_fee)
+          row.teacher_entitlement = standardTeacherShare(row)
+          row.is_suggestion = true
+        }
+        rows.value.push(row)
+      }
     }
     suggestLatestApprovedArrangement()
   } catch (cause) {
@@ -458,11 +473,12 @@ onMounted(async () => {
   }
 })
 
-async function save() {
+async function save(onlyRow?: RegistrationClassRow) {
   if (!db || saving.value || !isAdmin.value) return
+  const selectedRows = onlyRow ? [onlyRow] : rows.value
   error.value = ''
   success.value = ''
-  if (!rows.value.length || new Set(rows.value.map(row => row.class_id)).size !== rows.value.length) {
+  if (!selectedRows.length || new Set(selectedRows.map(row => row.class_id)).size !== selectedRows.length) {
     error.value = t('registration.selectClasses')
     return
   }
@@ -470,7 +486,7 @@ async function save() {
     error.value = t('registration.selectStudent')
     return
   }
-  if (rows.value.some(row => alreadyRegisteredClassIds.value.has(row.class_id))) {
+  if (selectedRows.some(row => alreadyRegisteredClassIds.value.has(row.class_id))) {
     error.value = t('agreements.duplicate')
     return
   }
@@ -478,7 +494,7 @@ async function save() {
     error.value = t('registration.invalidDate')
     return
   }
-  if (rows.value.some(row =>
+  if (selectedRows.some(row =>
     row.original_fee === null || row.agreed_fee === null || row.teacher_entitlement === null
     || Number(row.original_fee) < 0 || Number(row.agreed_fee) <= 0 || Number(row.teacher_entitlement) < 0
     || (row.discount > 0 && row.discount_reason.trim().length < 4)
@@ -492,10 +508,10 @@ async function save() {
     return
   }
 
-  if (!window.confirm(t('agreements.shortConfirm', {
+  if (!onlyRow && !window.confirm(t('agreements.shortConfirm', {
     student: selected.value ? `${selected.value.first_name} ${selected.value.last_name}` : `${person.first_name} ${person.last_name}`.trim(),
     month: monthLabel.value,
-    count: rows.value.length
+    count: selectedRows.length
   }))) return
 
   saving.value = true
@@ -507,7 +523,7 @@ async function save() {
       student_id: mode.value === 'returning' ? selected.value?.id : null,
       month: monthStart(month.value),
       date: date.value,
-      classes: rows.value.map(row => ({
+      classes: selectedRows.map(row => ({
         ...row,
         custom_teacher_share:row.is_exception,
         teacher_share_reason:row.is_exception?row.exception_reason:null,
@@ -523,7 +539,8 @@ async function save() {
       code: result.data.student_code,
       count: result.data.membership_count
     })
-    rows.value = []
+    if (onlyRow) rows.value = rows.value.filter(row => row.class_id !== onlyRow.class_id)
+    else rows.value = []
     key.reset()
     emit('saved')
   } catch (cause) {
@@ -615,7 +632,7 @@ async function saveSelectedProfile() {
     <button v-if="success" class="btn primary" type="button" @click="nextStudent">{{ t('registration.nextStudent') }}</button>
     <Notice v-if="!isAdmin" :message="t('agreements.adminOnly')" kind="error" />
 
-    <form @submit.prevent="save">
+    <form @submit.prevent="save()">
       <fieldset :disabled="saving || !isAdmin" class="registration-fields">
 
         <!-- ============================================== -->
@@ -779,7 +796,7 @@ async function saveSelectedProfile() {
 
               <!-- 3 Actions: Use previous, Modify previous, Enter new arrangement -->
               <div class="history-actions">
-                <button
+              <button
                   class="btn small-btn primary"
                   type="button"
                   :disabled="!financiallyApproved(record)"
@@ -865,6 +882,8 @@ async function saveSelectedProfile() {
               {{ t('agreements.modifyingHint') }}
             </p>
 
+            <details class="agreement-edit-details">
+              <summary>{{ t('common.edit') }}</summary>
             <div class="form-grid registration-compact-grid">
               <label class="wide">
                 {{ t('registration.class') }}
@@ -968,7 +987,12 @@ async function saveSelectedProfile() {
                 </div>
               </details>
             </div>
-
+            </details>
+            <div class="form-footer class-confirm-footer">
+              <button class="btn primary" type="button" :disabled="saving || loading || closed || alreadyRegisteredClassIds.has(row.class_id) || !row.class_id || !row.agreed_fee || !isAdmin || (mode==='new' && duplicateMatches.length>0 && !duplicateConfirmed)" @click="save(row)">
+                {{ saving ? t('common.loading') : t('agreements.confirmRegister') }}
+              </button>
+            </div>
           </article>
 
 

@@ -52,9 +52,10 @@ onMounted(load)
       <button class="btn" :disabled="loading" @click="load">{{ t('common.refresh') }}</button>
     </PageTitle>
     <Notice :message="error" kind="error" />
+    <MonthlyRegistration v-if="auth.canEducation.value" @saved="registrationSaved" />
+    <RegistrationRenewalReminders v-if="auth.canEducation.value" :key="registrationRevision" />
     <RegistrationStatistics :key="registrationRevision" />
     <ClassRegistrationOverview />
-    <MonthlyRegistration v-if="auth.canEducation.value" @saved="registrationSaved" />
     <OfficeSummary v-if="auth.canFinance.value" :key="registrationRevision" />
     <div class="grid-two dashboard-grid">
       <section class="card">

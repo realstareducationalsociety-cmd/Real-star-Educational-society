@@ -11,7 +11,7 @@ const scalar = async (sql, args = []) => Object.values((await q(sql, args)).rows
 try {
   await db.exec(`create role anon;create role authenticated;create schema auth;create table auth.users(id uuid primary key);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;grant usage on schema public,auth to authenticated,anon;grant execute on function auth.uid() to authenticated,anon;`)
 
-  for (const file of readdirSync('supabase/migrations').filter(f => f.endsWith('.sql')).sort()) {
+  for (const file of readdirSync('supabase/migrations').filter(f => f.endsWith('.sql') && f !== '022_chapter_profit_and_material_name_guards.sql').sort()) {
     let migration = readFileSync('supabase/migrations/' + file, 'utf8').replace('create extension if not exists pgcrypto;', '')
     if (file === '013_november_import_review.sql') {
       migration = migration.replace('(array_agg(s.id order by s.id))[1]', 'min(s.id)')
@@ -161,6 +161,62 @@ try {
   const otherStudents = Number(await scalar("select count(*) from public.students where student_code <> 'RS-000056'"))
   assert.ok(otherStudents >= 0, 'Other students must not be affected')
 
+  // Migration 022: chapter collections enter common profit once; office expenses
+  // are deducted once; book cash remains exclusively in its own ledger.
+  await db.exec('reset role')
+  const historicalChapter = await scalar(`insert into public.chapters(title,class_id,produced_quantity,default_sale_price,total_print_cost,printing_cost_on)
+    values('Historical December chapter',$1,5,100,30,date '2026-12-03') returning id`, [classGrade3])
+  await db.exec(readFileSync('supabase/migrations/022_chapter_profit_and_material_name_guards.sql','utf8'))
+  await db.exec('set role authenticated')
+  await q("select set_config('request.jwt.claim.sub',$1,false)", [admin])
+  const chapter = await scalar(`insert into public.chapters(title,class_id,produced_quantity,default_sale_price)
+    values('December chapter',$1,5,100) returning id`, [classGrade3])
+  const book = await scalar(`insert into public.books(title,owner_name,opening_stock,sale_price,commission_per_book)
+    values('December book','Local publisher',3,50,0) returning id`)
+  await q('update public.chapters set default_sale_price=110 where id=$1', [historicalChapter])
+  assert.equal(Number(await scalar('select total_print_cost from public.chapters where id=$1', [historicalChapter])), 30, 'Editing other chapter fields leaves legacy print cost unchanged')
+  await assert.rejects(() => q('update public.chapters set total_print_cost=0 where id=$1', [historicalChapter]), /Historical chapter printing costs/)
+  await assert.rejects(() => q("update public.chapters set printing_cost_on=date '2026-12-04' where id=$1", [historicalChapter]), /Historical chapter printing costs and dates/)
+  await assert.rejects(() => q(`insert into public.chapters(title,class_id,produced_quantity,total_print_cost,printing_cost_on) values('New print cost',$1,1,5,date '2026-12-03')`, [classGrade3]), /Record new printing costs in office expenses/)
+  const reserveBefore = Number((await scalar('select public.partner_account_summary()')).distributable_reserve)
+  await q(`insert into public.expenses(category,description,amount,spent_on) values('Office printing','Chapter print run',30,date '2026-12-03')`)
+  const chapterSale = await scalar(`select public.sell_material('chapter',$1,$2,$3,100,40,date '2026-12-04',$4)`, [chapter,noorzia,classGrade3,id()])
+  let december = await scalar("select public.office_month_summary(date '2026-12-01')")
+  assert.equal(Number(december.chapter_collected), 40, 'Only collected chapter money counts as common revenue')
+  assert.equal(Number(december.chapter_outstanding), 60, 'Unpaid chapter balance remains outstanding')
+  assert.equal(Number(december.expenses), 30, 'Printing expense is deducted through office expenses')
+  assert.equal(Number(december.gross_collected), 40, 'Chapter income is reported in the common gross income total')
+  assert.equal(Number(december.chapter_printing), 30, 'Legacy UI receives its historical printing field for compatibility')
+  assert.equal(Number(december.chapter_net), 10, 'Legacy chapter-net display remains populated without changing common profit math')
+  assert.equal(Number(december.net_after_entitlement), 10, 'The printing expense is deducted exactly once')
+  const reserveAfterChapter = Number((await scalar('select public.partner_account_summary()')).distributable_reserve)
+  assert.equal(reserveAfterChapter - reserveBefore, 10, 'Partner reserve includes chapter cash less the single office expense')
+  await scalar(`select public.sell_material('book',$1,$2,$3,50,50,date '2026-12-04',$4)`, [book,noorzia,classGrade3,id()])
+  const bookExpenseRequest = id()
+  const bookExpense = await scalar(`select public.record_book_expense('Stock delivery','Independent book account test',25,date '2026-12-05',$1)`, [bookExpenseRequest])
+  assert.equal(await scalar(`select public.record_book_expense('Stock delivery','Independent book account test',25,date '2026-12-05',$1)`, [bookExpenseRequest]), bookExpense, 'Book expense retry is idempotent')
+  await assert.rejects(() => scalar(`select public.record_book_expense('Stock delivery','Different payload',25,date '2026-12-05',$1)`, [bookExpenseRequest]), /Request ID already used with different book expense details/)
+  assert.equal(Number(await scalar("select (public.independent_book_summary()->>'expenses')::numeric")), 25, 'Book expenses are visible in the separate book account')
+  assert.deepEqual(await scalar("select public.office_month_summary(date '2026-12-01')"), december, 'Book sales never change office totals')
+  assert.equal(Number((await scalar('select public.partner_account_summary()')).distributable_reserve), reserveAfterChapter, 'Book proceeds never change partner reserve')
+  assert.equal(Number(await scalar("select (public.independent_book_summary()->>'collected')::numeric")), 50, 'Book receipt remains in the independent ledger')
+  await q("select public.void_book_expense($1,'Void isolated expense fixture')", [bookExpense])
+  assert.equal(Number(await scalar("select (public.independent_book_summary()->>'expenses')::numeric")), 0, 'Voided book expenses remain recorded but are excluded from book totals')
+  assert.equal(Number(await scalar("select count(*) from public.audit_logs where table_name='book_expenses' and row_id=$1 and action='UPDATE'", [bookExpense])), 1, 'Book expense void is audited')
+  const officeExpenseCountBeforeReport = Number(await scalar('select count(*) from public.expenses'))
+  await db.exec(readFileSync('supabase/chapter_print_cost_reconciliation_readonly.sql','utf8'))
+  assert.equal(Number(await scalar('select count(*) from public.expenses')), officeExpenseCountBeforeReport, 'Historical printing reconciliation report is read-only')
+  await db.exec('reset role')
+  await assert.rejects(() => q(`insert into public.chapters(title,class_id,produced_quantity) values('  December   chapter ',$1,1)`, [classGrade3]), /normalized name already exists/)
+  await assert.rejects(() => q(`insert into public.books(title,owner_name) values('December book','Local  publisher')`), /normalized name already exists/)
+  await db.exec('set role authenticated')
+  await q("select set_config('request.jwt.claim.sub',$1,false)", [admin])
+  await q(`insert into public.chapters(title,class_id,produced_quantity) values('ریاضی',$1,1)`, [classGrade3])
+  await assert.rejects(() => q(`insert into public.chapters(title,class_id,produced_quantity) values('رياضى',$1,1)`, [classGrade3]), /normalized name already exists/)
+  await db.exec('reset role')
+  await db.exec(readFileSync('supabase/migrations/022_chapter_profit_and_material_name_guards.sql','utf8'))
+  assert.equal(Number(await scalar("select count(*) from pg_trigger where tgname='guard_unique_material_name' and not tgisinternal")), 2, 'Reapplying migration 022 replaces its triggers without duplicates')
+
   console.log(JSON.stringify({
     result: 'PASS',
     student: 'RS-000056 (Noorzia Atayee)',
@@ -182,7 +238,8 @@ try {
     grade2_deactivated: true,
     grade3_active: true,
     audit_logged: true,
-    atomic: true
+    atomic: true,
+    migration_022: { chapter_collected: 40, chapter_outstanding: 60, printing_expense_deducted_once: true, book_sales_and_expenses_isolated: true, duplicate_names_blocked: true, migration_idempotent_triggers: true }
   }, null, 2))
 } finally {
   await db.close()
